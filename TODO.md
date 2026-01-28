@@ -118,3 +118,10 @@ This will be our nonexhaustive todo list for Holy Unblocker LTS v6.x.x and above
 - Switched to Fastify for serving content from the backend; a separate Express backend file is kept in case it's still needed
 - Rammerhead is now locally built into the HU LTS repository
 - Simplified the HU LTS setup process and added more default npm commands
+
+https://shopboog.com/
+https://ixiresearch.org/
+https://potatoesryummy.space/
+https://sleepsixsevensleep.org/
+
+
