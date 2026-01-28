@@ -1,0 +1,10 @@
+{
+  "title": "HU LTS",
+  "host": "0.0.0.0",
+  "pathname": "/",
+  "minifyScripts": true,
+  "randomizeIdentifiers": true,
+  "production": false,
+  "disguiseFiles": true,
+  "usingSEO": false
+}

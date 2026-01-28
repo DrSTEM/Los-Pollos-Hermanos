@@ -1,0 +1,18 @@
+{
+  "name": "Holy Unblocker v6.8.7",
+  "description": "Holy Unblocker is a secure web proxy service supporting numerous sites while concentrating on detail with design, mechanics, and features. Bypass web filters regardless of whether it is an extension or network-based.",
+  "repository": "https://github.com/QuiteAFancyEmerald/Holy-Unblocker",
+  "logo": "https://raw.githubusercontent.com/QuiteAFancyEmerald/Holy-Unblocker/master/views/assets/img/icon.png",
+  "keywords": [
+    "holyunblocker",
+    "rammerhead",
+    "scramjet",
+    "ultraviolet",
+    "titaniumnetwork",
+    "node",
+    "proxy",
+    "unblocker",
+    "webproxy",
+    "games"
+  ]
+}
