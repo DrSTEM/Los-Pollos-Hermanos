@@ -1,4 +1,3 @@
-// run-command.mjs — cross-platform, works on Windows and Linux (Codespaces)
 import {
   writeFileSync,
   unlinkSync,
@@ -34,99 +33,54 @@ const scramjetPath = join(
 // This constant is copied over from /src/server.mjs.
 const shutdown = fileURLToPath(new URL('./src/.shutdown', import.meta.url));
 
-/**
- * Helper: start backend.js in a detached, cross-platform way.
- * By default we detach + ignore stdio so the server keeps running after this process exits.
- * If you want to run in the foreground for debugging (show logs), pass { foreground: true }.
- */
-function startDetachedServer({ foreground = false } = {}) {
-  const modulePath = fileURLToPath(new URL('./backend.js', import.meta.url));
-
-  // If user explicitly wants foreground output (for debugging), attach stdio.
-  if (foreground) {
-    const server = fork(modulePath, [], {
-      cwd: process.cwd(),
-      detached: false,
-      stdio: 'inherit',
-    });
-    // Do not unref so the parent keeps the child alive until it exits.
-    return server;
-  }
-
-  // Detached background server — works on Windows and Linux.
-  const server = fork(modulePath, [], {
-    cwd: process.cwd(),
-    detached: true,
-    stdio: 'ignore', // fully detach stdio so child keeps running after parent exits
-  });
-
-  // Don't keep references that would prevent parent from exiting
-  server.unref();
-
-  try {
-    // Some older Node versions require disconnecting on Windows to fully detach
-    if (typeof server.disconnect === 'function') server.disconnect();
-  } catch (e) {
-    // ignore
-  }
-
-  return server;
-}
-
-/**
- * Helper: run a shell command (promisified-ish)
- * Uses shell: true to ensure cross-platform resolution of npm, npx, etc.
- */
-function execCmd(cmd, { silent = false } = {}) {
-  return new Promise((resolve) => {
-    exec(cmd, { shell: true }, (error, stdout, stderr) => {
-      if (error) {
-        if (!silent) console.error('[Exec Error]', error);
-        return resolve({ error, stdout, stderr });
-      }
-      if (!silent && stdout) console.log('[Exec]', stdout.trim());
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-// Process commands passed after `node run-command.mjs`
-commands: for (let i = 2; i < process.argv.length; i++) {
+// Run each command line argument passed after node run-command.mjs.
+// Commands are defined in the switch case statement below.
+commands: for (let i = 2; i < process.argv.length; i++)
   switch (process.argv[i]) {
-    case 'start': {
-      // Production: delegate to PM2
-      if (config.production) {
-        // Use shell: true via execCmd for cross-platform reliability.
-        await execCmd('npx pm2 start ecosystem.config.js --env production');
-        break;
-      }
-
-      // Non-production: start detached server in a cross-platform way.
-      // If user requested foreground (eg. --foreground passed after start), run attached.
-      const extraArgs = process.argv.slice(i + 1);
-      const foreground = extraArgs.includes('--foreground') || extraArgs.includes('foreground');
-
-      try {
-        if (foreground) {
-          console.log('[Start] Starting server in foreground (attached).');
-          startDetachedServer({ foreground: true });
-        } else {
-          console.log('[Start] Starting detached background server.');
-          startDetachedServer({ foreground: false });
-          console.log('[Start] Server started (detached).');
-        }
-      } catch (e) {
-        console.error('[Start Error]', e);
-        process.exitCode = 1;
+    // Commmand to boot up the server. Use PM2 to run if production is true in the
+    // config file.
+    case 'start':
+      if (config.production)
+        exec(
+          'npx pm2 start ecosystem.config.js --env production',
+          (error, stdout) => {
+            if (error) throw error;
+            console.log('[Start]', stdout);
+          }
+        );
+      // Handle setup on Windows differently from platforms with POSIX-compliant
+      // shells. This should run the server as a background process.
+      else if (process.platform === 'win32')
+        exec('START /MIN "" node backend.js', (error, stdout) => {
+          if (error) {
+            console.error('[Start Error]', error);
+            process.exitCode = 1;
+          }
+          console.log('[Start]', stdout);
+        });
+      // The following approach (and similar approaches) will not work on Windows,
+      // because exiting this program will also terminate backend.js on Windows.
+      else {
+        const server = fork(
+          fileURLToPath(new URL('./backend.js', import.meta.url)),
+          { cwd: process.cwd(), detached: true }
+        );
+        server.unref();
+        server.disconnect();
       }
       break;
-    }
 
+    // Stop the server. Make a temporary file that the server will check for if told
+    // to shut down. This is done by sending a GET request to the server.
     case 'stop': {
       writeFileSync(shutdown, '');
-      let timeoutId;
-      let hasErrored = false;
+      let timeoutId,
+        hasErrored = false;
       try {
+        /* Give the server 5 seconds to respond, otherwise cancel this and throw an
+         * error to the console. The fetch request will also throw an error
+         * immediately if checking the server on localhost and the port is unused.
+         */
         const response = await Promise.race([
           fetch(new URL(serverUrl.pathname + 'test-shutdown', serverUrl)),
           new Promise((resolve) => {
@@ -139,29 +93,27 @@ commands: for (let i = 2; i < process.argv.length; i++) {
         if (response === 'Error') throw new Error('Server is unresponsive.');
       } catch (e) {
         // Remove the temporary shutdown file since the server didn't remove it.
-        try {
-          unlinkSync(shutdown);
-        } catch (ex) {
-          // ignore
-        }
-        // If fetch threw due to no server, it's a TypeError. We don't want to spam logs.
-        if (e instanceof TypeError) {
-          clearTimeout(timeoutId);
-        } else {
+        unlinkSync(shutdown);
+        // Check if this is the error thrown by the fetch request for an unused port.
+        // Don't print the unused port error, since nothing has actually broken.
+        if (e instanceof TypeError) clearTimeout(timeoutId);
+        else {
           console.error('[Stop Error]', e);
+          // Stop here unless Node will be killed later.
           if (!process.argv.slice(i + 1).includes('kill')) hasErrored = true;
         }
       }
-
-      // Stop PM2 in production
-      if (config.production && !process.argv.slice(i + 1).includes('kill')) {
-        const { error } = await execCmd('npx pm2 stop ecosystem.config.js', { silent: false });
-        if (error) {
-          console.error('[Stop Error] PM2 stop failed.');
-          hasErrored = true;
-        }
-      }
-
+      // Do not run this if Node will be killed later in this script. It will fail.
+      if (config.production && !process.argv.slice(i + 1).includes('kill'))
+        exec('npx pm2 stop ecosystem.config.js', (error, stdout) => {
+          if (error) {
+            console.error('[Stop Error]', error);
+            hasErrored = true;
+          }
+          console.log('[Stop]', stdout);
+        });
+      // Do not continue executing commands since the server was unable to be stopped.
+      // Mostly implemented to prevent duplicating Node instances with npm restart.
       if (hasErrored) {
         process.exitCode = 1;
         break commands;
@@ -172,33 +124,54 @@ commands: for (let i = 2; i < process.argv.length; i++) {
     case 'build': {
       const dist = fileURLToPath(new URL('./views/dist', import.meta.url));
       rmSync(dist, { force: true, recursive: true });
-      mkdirSync(dist, { recursive: true });
+      mkdirSync(dist);
 
+      /* The archive directory is excluded from this process, since source
+       * rewrites are not intended to be used by any of those files.
+       * Assets are compiled separately, before the rest of the files.
+       */
       const ignoredDirectories = ['dist', 'assets', 'uv', 'scram', 'archive'];
       const ignoredFileTypes = /\.map$/;
 
-      const compile = (dir, base = '', outDir = '', initialDir = dir, applyRewrites = initialDir === './views') =>
+      const compile = (
+        dir,
+        base = '',
+        outDir = '',
+        initialDir = dir,
+        applyRewrites = initialDir === './views'
+      ) =>
         readdirSync(base + dir).forEach((file) => {
-          let oldLocation = new URL(file, new URL(base + dir + '/', import.meta.url));
-          if ((ignoredDirectories.includes(file) && applyRewrites) || ignoredFileTypes.test(file)) return;
-          const fileStats = lstatSync(oldLocation);
-          const targetPath = fileURLToPath(
-            new URL(
-              './views/dist/' +
-                outDir +
-                (base + dir + '/').slice(initialDir.length + 1) +
-                ((!config.usingSEO && flatAltPaths['files/' + file]) || file),
-              import.meta.url
-            )
+          let oldLocation = new URL(
+            file,
+            new URL(base + dir + '/', import.meta.url)
           );
-          if (fileStats.isFile() && !existsSync(targetPath)) {
-            if (/\.(?:html|js|css|json|txt|xml)$/.test(file) && applyRewrites) {
+          if (
+            (ignoredDirectories.includes(file) && applyRewrites) ||
+            ignoredFileTypes.test(file)
+          )
+            return;
+          const fileStats = lstatSync(oldLocation),
+            targetPath = fileURLToPath(
+              new URL(
+                './views/dist/' +
+                  outDir +
+                  (base + dir + '/').slice(initialDir.length + 1) +
+                  ((!config.usingSEO && flatAltPaths['files/' + file]) || file),
+                import.meta.url
+              )
+            );
+          if (fileStats.isFile() && !existsSync(targetPath))
+            if (/\.(?:html|js|css|json|txt|xml)$/.test(file) && applyRewrites)
               writeFileSync(
                 targetPath,
-                paintSource(loadTemplates(tryReadFile(base + dir + '/' + file, import.meta.url, false)))
+                paintSource(
+                  loadTemplates(
+                    tryReadFile(base + dir + '/' + file, import.meta.url, false)
+                  )
+                )
               );
-            } else copyFileSync(base + dir + '/' + file, targetPath);
-          } else if (fileStats.isDirectory()) {
+            else copyFileSync(base + dir + '/' + file, targetPath);
+          else if (fileStats.isDirectory()) {
             if (!existsSync(targetPath)) mkdirSync(targetPath);
             compile(file, base + dir + '/', outDir, initialDir, applyRewrites);
           }
@@ -206,10 +179,12 @@ commands: for (let i = 2; i < process.argv.length; i++) {
 
       const localAssetDirs = ['assets', 'scram', 'uv'];
       for (const path of localAssetDirs) {
-        mkdirSync('./views/dist/' + path, { recursive: true });
+        mkdirSync('./views/dist/' + path);
         compile('./views/' + path, '', path + '/', './views/' + path, true);
       }
 
+      // Combine scripts from the corresponding node modules into the same
+      // dist-generated directories for compiling, and avoid overwriting files.
       const compilePaths = {
         epoxy: epoxyPath,
         libcurl: libcurlPath,
@@ -219,12 +194,14 @@ commands: for (let i = 2; i < process.argv.length; i++) {
         chii: 'node_modules/chii',
       };
       for (const path of Object.entries(compilePaths)) {
-        const prefix = path[0] + '/';
-        const prefixUrl = new URL('./views/dist/' + prefix, import.meta.url);
-        if (!existsSync(prefixUrl)) mkdirSync(prefixUrl, { recursive: true });
+        const prefix = path[0] + '/',
+          prefixUrl = new URL('./views/dist/' + prefix, import.meta.url);
+        if (!existsSync(prefixUrl)) mkdirSync(prefixUrl);
+
         compile(path[1].slice(path[1].indexOf('node_modules')), '', prefix);
       }
 
+      // Minify the scripts and stylesheets upon compiling, if enabled in config.
       if (config.minifyScripts)
         await build({
           entryPoints: [
@@ -246,11 +223,16 @@ commands: for (let i = 2; i < process.argv.length; i++) {
 
       compile('./views');
 
-      mkdirSync('./views/dist/archive', { recursive: true });
-      if (existsSync('./views/archive')) compile('./views/archive', '', 'archive/');
+      // Compile the archive directory separately.
+      mkdirSync('./views/dist/archive');
+      if (existsSync('./views/archive'))
+        compile('./views/archive', '', 'archive/');
 
       const createFile = (location, text) => {
-        writeFileSync(fileURLToPath(new URL('./views/dist/' + location, import.meta.url)), paintSource(loadTemplates(text)));
+        writeFileSync(
+          fileURLToPath(new URL('./views/dist/' + location, import.meta.url)),
+          paintSource(loadTemplates(text))
+        );
       };
 
       createFile('assets/json/splash.json', JSON.stringify(splashRandom));
@@ -263,10 +245,21 @@ commands: for (let i = 2; i < process.argv.length; i++) {
               writeFileSync(
                 fileLocation,
                 Buffer.from(
-                  await new Response(new Blob([tryReadFile(fileLocation, import.meta.url, false)])).arrayBuffer()
+                  await new Response(
+                    new Blob([
+                      tryReadFile(fileLocation, import.meta.url, false),
+                    ])
+                      .stream()
+                      .pipeThrough(new CompressionStream('gzip'))
+                  ).arrayBuffer()
                 )
               );
-            else if (recursive && lstatSync(fileLocation).isDirectory() && file !== 'deobf') await compress(fileLocation, true);
+            else if (
+              recursive &&
+              lstatSync(fileLocation).isDirectory() &&
+              file !== 'deobf'
+            )
+              await compress(fileLocation, true);
           }
         };
         await compress('./views/dist');
@@ -277,91 +270,104 @@ commands: for (let i = 2; i < process.argv.length; i++) {
       break;
     }
 
+    // Delete all files in target locations. This is primarily used to manage
+    // Rammerhead's cache output.
     case 'clean': {
+      // If including Rammerhead sessions, be careful to not let the global
+      // autocomplete session be deleted without restarting the server.
       const targetDirs = ['./lib/rammerhead/cache-js'];
-      for (const targetDir of targetDirs) {
+      for (const targetDir of targetDirs)
         try {
           const targetPath = fileURLToPath(new URL(targetDir, import.meta.url));
           rmSync(targetPath, { force: true, recursive: true });
-          mkdirSync(targetPath, { recursive: true });
-          writeFileSync(fileURLToPath(new URL(targetDir + '/.gitkeep', import.meta.url)), '');
-          console.log('[Clean]', `Reset folder ${targetDir} at ${new Date().toISOString()}.`);
+          mkdirSync(targetPath);
+          writeFileSync(
+            fileURLToPath(new URL(targetDir + '/.gitkeep', import.meta.url)),
+            ''
+          );
+          console.log(
+            '[Clean]',
+            `Reset folder ${targetDir} at ${new Date().toISOString()}.`
+          );
         } catch (e) {
           console.error('[Clean Error]', e);
         }
-      }
       break;
     }
 
     case 'format': {
-      try {
-        await execCmd('npx prettier --write .');
-      } catch (e) {
-        console.error('[Format Error]', e);
-      }
-      break;
-    }
-
-    case 'kill': {
-      try {
-        if (process.platform === 'win32') {
-          // Use cmd to run both pm2 delete and taskkill
-          await execCmd('( npx pm2 delete ecosystem.config.js ) & taskkill /F /IM node*');
-        } else {
-          await execCmd('npx pm2 delete ecosystem.config.js; pkill node');
+      exec('npx prettier --write .', (error, stdout) => {
+        if (error) {
+          console.error('[Clean Error]', error);
         }
-        console.log('[Kill] Kill sequence complete.');
-      } catch (e) {
-        console.error('[Kill Error]', e);
-      }
-      break;
-    }
-
-    case 'workflow': {
-      // Make a temporary server that reports startup errors, then restart detached.
-      const tempServerModule = fileURLToPath(new URL('./backend.js', import.meta.url));
-
-      const tempServer = fork(tempServerModule, [], {
-        cwd: process.cwd(),
-        stdio: ['inherit', 'pipe', 'pipe', 'ipc'],
-        detached: true,
+        console.log('[Clean]', stdout);
       });
+      break;
+    }
 
-      // If the server prints errors to stderr (other than deprecation warnings), stop everything.
-      tempServer.stderr.on('data', (data) => {
-        const text = data.toString();
-        if (text.indexOf('DeprecationWarning') >= 0) return console.log(text);
-        console.error('[Workflow Start Error]', text);
-        try {
-          tempServer.kill();
-        } catch (e) {
-          // ignore
+    /* Kill all node processes and fully reset PM2. To be used for debugging.
+     * Using npx pm2 monit, or npx pm2 list in the terminal will also bring up
+     * more PM2 debugging tools.
+     */
+    case 'kill':
+      if (process.platform === 'win32')
+        exec(
+          '( npx pm2 delete ecosystem.config.js ) ; taskkill /F /IM node*',
+          (error, stdout) => {
+            console.log('[Kill]', stdout);
+          }
+        );
+      else
+        exec(
+          'npx pm2 delete ecosystem.config.js; pkill node',
+          (error, stdout) => {
+            console.log('[Kill]', stdout);
+          }
+        );
+      break;
+
+    /* Make a temporary server solely to test startup errors. The server will
+     * stop the command if there is an error, and restart itself otherwise.
+     * This uses the same command for both Windows and other platforms, but
+     * consequently forces the server to stay completely silent after startup.
+     */
+    case 'workflow': {
+      const tempServer = fork(
+        fileURLToPath(new URL('./backend.js', import.meta.url)),
+        {
+          cwd: process.cwd(),
+          stdio: ['inherit', 'pipe', 'pipe', 'ipc'],
+          detached: true,
         }
+      );
+      tempServer.stderr.on('data', (stderr) => {
+        // The temporary server will print startup errors that aren't deprecation
+        // warnings; stop the process and return an error exit code upon doing so.
+        if (stderr.toString().indexOf('DeprecationWarning') >= 0)
+          return console.log(stderr.toString());
+        console.error(stderr.toString());
+        tempServer.kill();
         process.exitCode = 1;
       });
-
-      tempServer.stdout.on('data', (chunk) => {
-        // No startup errors — stop the temp server and start a detached server (silent).
-        try {
-          tempServer.kill();
-        } catch (e) {
-          // ignore
-        }
-        // start final detached server using ignored stdio so it won't hang
-        startDetachedServer({ foreground: false });
+      tempServer.stdout.on('data', () => {
+        // There are no startup errors by this point, so kill the server and start
+        // over. The restart alters stdio to prevent the workflow check from hanging.
+        tempServer.kill();
+        const server = fork(
+          fileURLToPath(new URL('./backend.js', import.meta.url)),
+          // The stdio: 'ignore' makes the server completely silent, yet it is also
+          // why this works for Windows when the start command's version does not.
+          { cwd: process.cwd(), stdio: 'ignore', detached: true }
+        );
+        server.unref();
+        server.disconnect();
       });
-
-      try {
-        tempServer.unref();
-        if (typeof tempServer.disconnect === 'function') tempServer.disconnect();
-      } catch (e) {
-        // ignore
-      }
+      tempServer.unref();
+      tempServer.disconnect();
       break;
     }
 
-    // If there are more commands, the switch will handle them here.
-  } // end switch
-} // end for
+    // No default case.
+  }
 
 process.exitCode = process.exitCode || 0;
