@@ -1,4 +1,4 @@
-version: '3.9'
+version: "3.9"
 
 services:
   holy-unblocker:
@@ -6,7 +6,7 @@ services:
     build: .
     container_name: holy-unblocker
     ports:
-      - '8080:8080'
+      - "8080:8080"
     restart: unless-stopped
     environment:
       NODE_ENV: production

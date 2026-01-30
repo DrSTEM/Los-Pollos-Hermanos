@@ -7,7 +7,7 @@ This will be our nonexhaustive todo list for Holy Unblocker LTS v6.x.x and above
 - [ ] Add booksmark menu (source wise already present pretty much)
 - [ ] Add Chii + ensuring users can access devtools while browsing - partial
 - [ ] Setting to open multiple stealth frames; basically about:blank but using our system. Pops out in another tab
-- [ ] Omnibox should state what the current site the user is on like a proper URL bar
+- [ ] Omnibox should state what the current site the user is on like a proper URL bar 
 - [ ] Improve adblocking functions on site using Workerware + a pre-bundled uBlock Origin
 - [ ] Add a "website self-destruct" button to the settings menu
 - [ ] Transport Options Swapping on Frame (Settings Menu doesn't swap)
@@ -73,7 +73,7 @@ This will be our nonexhaustive todo list for Holy Unblocker LTS v6.x.x and above
 - [x] Horizontal/general movement on scroll with AOS
 - [x] Showcase dev dependencies
 - [x] Update branding and icons
-- [x] Landing Page
+- [x] Landing Page 
 - [x] Settings Menu - partial I want to fix some colours
 - [x] More Dropdown Menu
 - [x] Web Proxies page
@@ -118,10 +118,3 @@ This will be our nonexhaustive todo list for Holy Unblocker LTS v6.x.x and above
 - Switched to Fastify for serving content from the backend; a separate Express backend file is kept in case it's still needed
 - Rammerhead is now locally built into the HU LTS repository
 - Simplified the HU LTS setup process and added more default npm commands
-
-https://shopboog.com/
-https://ixiresearch.org/
-https://potatoesryummy.space/
-https://sleepsixsevensleep.org/
-
-
